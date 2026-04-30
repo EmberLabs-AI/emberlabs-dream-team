@@ -8,6 +8,8 @@
   "scripts": {
     "broker": "bun broker.ts",
     "server": "bun server.ts",
+    "codex:mcp": "bun codex-server.ts mcp",
+    "codex:proxy": "bun codex-server.ts proxy",
     "test": "bun test"
   },
   "devDependencies": {
