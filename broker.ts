@@ -43,15 +43,29 @@ db.run(`
     summary TEXT NOT NULL DEFAULT '',
     registered_at TEXT NOT NULL,
     last_seen TEXT NOT NULL,
-    machine_id TEXT NOT NULL DEFAULT ''
+    machine_id TEXT NOT NULL DEFAULT '',
+    peer_type TEXT NOT NULL DEFAULT 'claude',
+    delivery_mode TEXT NOT NULL DEFAULT 'auto'
   )
 `);
 
-// Migrate pre-EMB-591 DBs: add machine_id column if it doesn't exist.
-// SQLite ALTER TABLE is idempotent only if we guard on current schema.
+// Idempotent migrations — only ALTER if the column is missing.
+// SQLite ALTER TABLE has no IF NOT EXISTS, so we guard on current schema.
 const peerCols = db.query("PRAGMA table_info(peers)").all() as { name: string }[];
-if (!peerCols.some((c) => c.name === "machine_id")) {
+const hasCol = (name: string) => peerCols.some((c) => c.name === name);
+
+// EMB-591: cross-machine PID dedup
+if (!hasCol("machine_id")) {
   db.run("ALTER TABLE peers ADD COLUMN machine_id TEXT NOT NULL DEFAULT ''");
+}
+
+// Codex peer work: peer_type + delivery_mode. Existing rows backfill via DEFAULT
+// to 'claude' / 'auto' so the live Claude Code mesh keeps working unchanged.
+if (!hasCol("peer_type")) {
+  db.run("ALTER TABLE peers ADD COLUMN peer_type TEXT NOT NULL DEFAULT 'claude'");
+}
+if (!hasCol("delivery_mode")) {
+  db.run("ALTER TABLE peers ADD COLUMN delivery_mode TEXT NOT NULL DEFAULT 'auto'");
 }
 
 db.run(`
@@ -88,8 +102,8 @@ setInterval(cleanStalePeers, 30_000);
 // --- Prepared statements ---
 
 const insertPeer = db.prepare(`
-  INSERT INTO peers (id, pid, cwd, git_root, tty, summary, registered_at, last_seen, machine_id)
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  INSERT INTO peers (id, pid, cwd, git_root, tty, summary, registered_at, last_seen, machine_id, peer_type, delivery_mode)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `);
 
 const updateLastSeen = db.prepare(`
@@ -154,6 +168,10 @@ function handleRegister(body: RegisterRequest): RegisterResponse {
   // legacy single-machine behavior intact for same-host PID collisions
   // while no longer evicting peers on OTHER hosts.
   const machineId = body.machine_id ?? "";
+  // Codex peer work: pre-Codex Claude Code clients omit these. Defaults
+  // match the legacy behavior so the live Claude mesh keeps working.
+  const peerType = body.peer_type ?? "claude";
+  const deliveryMode = body.delivery_mode ?? "auto";
 
   // Dedup only within the SAME host. Previously the broker dedup'd on pid
   // alone, which silently evicted cross-machine peers whenever two macOS
@@ -166,7 +184,19 @@ function handleRegister(body: RegisterRequest): RegisterResponse {
     deletePeer.run(existing.id);
   }
 
-  insertPeer.run(id, body.pid, body.cwd, body.git_root, body.tty, body.summary, now, now, machineId);
+  insertPeer.run(
+    id,
+    body.pid,
+    body.cwd,
+    body.git_root,
+    body.tty,
+    body.summary,
+    now,
+    now,
+    machineId,
+    peerType,
+    deliveryMode
+  );
   return { id };
 }
 

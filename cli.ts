@@ -51,6 +51,8 @@ switch (cmd) {
             tty: string | null;
             summary: string;
             last_seen: string;
+            peer_type?: string;
+            delivery_mode?: string;
           }>
         >("/list-peers", {
           scope: "machine",
@@ -60,7 +62,9 @@ switch (cmd) {
 
         console.log("\nPeers:");
         for (const p of peers) {
-          console.log(`  ${p.id}  PID:${p.pid}  ${p.cwd}`);
+          const type = p.peer_type ?? "claude";
+          const mode = p.delivery_mode ?? "auto";
+          console.log(`  ${p.id}  [${type}/${mode}]  PID:${p.pid}  ${p.cwd}`);
           if (p.summary) console.log(`         ${p.summary}`);
           if (p.tty) console.log(`         TTY: ${p.tty}`);
           console.log(`         Last seen: ${p.last_seen}`);
@@ -83,6 +87,8 @@ switch (cmd) {
           tty: string | null;
           summary: string;
           last_seen: string;
+          peer_type?: string;
+          delivery_mode?: string;
         }>
       >("/list-peers", {
         scope: "machine",
@@ -94,7 +100,9 @@ switch (cmd) {
         console.log("No peers registered.");
       } else {
         for (const p of peers) {
-          const parts = [`${p.id}  PID:${p.pid}  ${p.cwd}`];
+          const type = p.peer_type ?? "claude";
+          const mode = p.delivery_mode ?? "auto";
+          const parts = [`${p.id}  [${type}/${mode}]  PID:${p.pid}  ${p.cwd}`];
           if (p.summary) parts.push(`  Summary: ${p.summary}`);
           console.log(parts.join("\n"));
         }

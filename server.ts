@@ -296,6 +296,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         const lines = peers.map((p) => {
           const parts = [
             `ID: ${p.id}`,
+            `Type: ${p.peer_type ?? "claude"} (delivery: ${p.delivery_mode ?? "auto"})`,
             `PID: ${p.pid}`,
             `CWD: ${p.cwd}`,
           ];
@@ -551,6 +552,8 @@ async function main() {
     tty,
     summary: initialSummary,
     machine_id: myMachineId,
+    peer_type: "claude",
+    delivery_mode: MODE === "pull" ? "pull" : "auto",
   } satisfies RegisterRequest);
   myId = reg.id;
   log(`Registered as peer ${myId} (machine_id=${myMachineId})`);
@@ -611,6 +614,8 @@ async function main() {
           tty: myTty,
           summary: mySummary,
           machine_id: myMachineId,
+          peer_type: "claude",
+          delivery_mode: MODE === "pull" ? "pull" : "auto",
         } satisfies RegisterRequest);
         myId = reg.id;
         log(`Re-registered as peer ${myId}`);

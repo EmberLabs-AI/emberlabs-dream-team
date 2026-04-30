@@ -1,5 +1,19 @@
-// Unique ID for each Claude Code instance (generated on registration)
+// Unique ID for each agent instance (generated on registration)
 export type PeerId = string;
+
+// Agent runtime that owns this peer. Drives discovery filters and signals to
+// other peers what kind of inbound channel they can expect when sending here.
+export type PeerType = "claude" | "codex";
+
+// How this peer wants inbound messages delivered.
+//   "auto"             — peer's own MCP server polls the broker and pushes via
+//                        notifications/claude/channel (current Claude default).
+//   "pull"             — peer drains via check_messages tool only (no auto-push).
+//                        Use this when the host can't subscribe to dev channels.
+//   "app-server-push"  — peer is Codex; a sidecar adapter watches the broker
+//                        and injects upstream via Codex app-server turn/start
+//                        or turn/steer.
+export type DeliveryMode = "auto" | "pull" | "app-server-push";
 
 export interface Peer {
   id: PeerId;
@@ -10,6 +24,10 @@ export interface Peer {
   summary: string;
   registered_at: string; // ISO timestamp
   last_seen: string; // ISO timestamp
+  // New fields (added with the Codex peer work). Defaults at the broker keep
+  // pre-Codex clients working unchanged.
+  peer_type: PeerType;
+  delivery_mode: DeliveryMode;
 }
 
 export interface Message {
@@ -34,6 +52,10 @@ export interface RegisterRequest {
   // its own ~15-17 bit PID space. Optional on the wire for backwards compat
   // with pre-fix clients; broker treats missing/empty as "unknown-host".
   machine_id?: string;
+  // Optional on the wire for backwards compat. Broker defaults missing
+  // values to "claude" / "auto" — the legacy Claude Code MCP behavior.
+  peer_type?: PeerType;
+  delivery_mode?: DeliveryMode;
 }
 
 export interface RegisterResponse {
