@@ -37,19 +37,19 @@ import {
 
 // --- Configuration ---
 
-const BROKER_PORT = parseInt(process.env.CLAUDE_PEERS_PORT ?? "7899", 10);
-const BROKER_URL = process.env.CLAUDE_PEERS_BROKER_URL ?? `http://127.0.0.1:${BROKER_PORT}`;
+const BROKER_PORT = parseInt(process.env.DREAM_TEAM_PORT ?? "7899", 10);
+const BROKER_URL = process.env.DREAM_TEAM_BROKER_URL ?? `http://127.0.0.1:${BROKER_PORT}`;
 const POLL_INTERVAL_MS = 1000;
 const HEARTBEAT_INTERVAL_MS = 15_000;
 const BROKER_SCRIPT = new URL("./broker.ts", import.meta.url).pathname;
 
-// CLAUDE_PEERS_MODE: "auto" (default) polls the broker every 1s and pushes
+// DREAM_TEAM_MODE: "auto" (default) polls the broker every 1s and pushes
 // messages to the host via notifications/claude/channel. "pull" disables the
 // poll loop entirely — the check_messages tool becomes the sole drain path.
 // Use "pull" when the host can't subscribe to dev channels (e.g., Desktop App
 // without --dangerously-load-development-channels). Pair with a Stop hook that
 // auto-calls check_messages on turn end so messages surface on the next tool turn.
-const RAW_MODE = (process.env.CLAUDE_PEERS_MODE ?? "auto").toLowerCase();
+const RAW_MODE = (process.env.DREAM_TEAM_MODE ?? "auto").toLowerCase();
 const MODE: "auto" | "pull" = RAW_MODE === "pull" ? "pull" : "auto";
 
 // --- Broker communication ---
@@ -495,7 +495,7 @@ async function pollAndPushMessages() {
     // Optimistic ACK — there's no receipt primitive for channel notifications,
     // so we assume success. If the host isn't subscribed to dev channels, the
     // push silently evaporates; users who hit that should set
-    // CLAUDE_PEERS_MODE=pull to disable this loop and rely on check_messages.
+    // DREAM_TEAM_MODE=pull to disable this loop and rely on check_messages.
     await ackMessages(fresh.map((m) => m.id));
   } catch (e) {
     // Broker might be down temporarily, don't crash
@@ -577,7 +577,7 @@ async function main() {
   // Detection experiment: log what the client advertised during initialize.
   // If flagged (--dangerously-load-development-channels) vs unflagged launches
   // differ, we can eventually detect channel-push support automatically
-  // instead of requiring CLAUDE_PEERS_MODE.
+  // instead of requiring DREAM_TEAM_MODE.
   mcp.oninitialized = () => {
     try {
       const caps = mcp.getClientCapabilities();
@@ -593,9 +593,9 @@ async function main() {
   let pollTimer: ReturnType<typeof setInterval> | null = null;
   if (MODE === "auto") {
     pollTimer = setInterval(pollAndPushMessages, POLL_INTERVAL_MS);
-    log(`Auto-poll enabled (CLAUDE_PEERS_MODE=auto, interval=${POLL_INTERVAL_MS}ms)`);
+    log(`Auto-poll enabled (DREAM_TEAM_MODE=auto, interval=${POLL_INTERVAL_MS}ms)`);
   } else {
-    log("Auto-poll disabled (CLAUDE_PEERS_MODE=pull); check_messages is the sole drain path");
+    log("Auto-poll disabled (DREAM_TEAM_MODE=pull); check_messages is the sole drain path");
   }
 
   // 7. Start heartbeat. If the broker reports stale (our peer row got

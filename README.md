@@ -94,7 +94,7 @@ The broker is dumb routing: messages in, messages out, ack tracking. Per-runtime
                   Claude Code    Codex CLI      Starforge / etc.
 ```
 
-The broker auto-launches when the first peer registers. It cleans up dead peers automatically. Cross-machine reachability is via Tailscale (`CLAUDE_PEERS_BROKER_URL=http://100.x.x.x:7899`).
+The broker auto-launches when the first peer registers. It cleans up dead peers automatically. Cross-machine reachability is via Tailscale (`DREAM_TEAM_BROKER_URL=http://100.x.x.x:7899`).
 
 ## Cross-machine setup (Tailscale)
 
@@ -102,7 +102,7 @@ On a remote peer (e.g., a Windows PC over Tailscale), point the MCP at the Mac b
 
 ```bash
 claude mcp add --scope user --transport stdio dream-team \
-  --env CLAUDE_PEERS_BROKER_URL=http://100.111.11.86:7899 \
+  --env DREAM_TEAM_BROKER_URL=http://100.111.11.86:7899 \
   -- bun ~/emberlabs-dream-team/server.ts
 ```
 
@@ -127,26 +127,26 @@ bun cli.ts kill-broker       # stop the broker
 
 | Environment variable        | Default                               | Description                                                                                  |
 | --------------------------- | ------------------------------------- | -------------------------------------------------------------------------------------------- |
-| `CLAUDE_PEERS_PORT`         | `7899`                                | Broker port                                                                                  |
-| `CLAUDE_PEERS_DB`           | `~/.claude-peers.db`                  | SQLite database path                                                                         |
-| `CLAUDE_PEERS_BROKER_URL`   | `http://127.0.0.1:$CLAUDE_PEERS_PORT` | Point a remote MCP at a different broker (e.g., over Tailscale)                              |
-| `CLAUDE_PEERS_BIND`         | `0.0.0.0`                             | Broker bind address                                                                          |
-| `CLAUDE_PEERS_MODE`         | `auto`                                | `auto` pushes via channel + polls every 1s. `pull` disables polling — see below.             |
-| `CODEX_PEERS_PROXY_PORT`    | `7900`                                | Codex proxy listen port                                                                      |
-| `CODEX_PEERS_REAL_APP_SERVER_PORT` | `7901`                         | Real Codex app-server port the proxy fronts                                                  |
+| `DREAM_TEAM_PORT`         | `7899`                                | Broker port                                                                                  |
+| `DREAM_TEAM_DB`           | `~/.dream-team.db`                  | SQLite database path                                                                         |
+| `DREAM_TEAM_BROKER_URL`   | `http://127.0.0.1:$DREAM_TEAM_PORT` | Point a remote MCP at a different broker (e.g., over Tailscale)                              |
+| `DREAM_TEAM_BIND`         | `0.0.0.0`                             | Broker bind address                                                                          |
+| `DREAM_TEAM_MODE`         | `auto`                                | `auto` pushes via channel + polls every 1s. `pull` disables polling — see below.             |
+| `DREAM_TEAM_CODEX_PROXY_PORT`    | `7900`                                | Codex proxy listen port                                                                      |
+| `DREAM_TEAM_CODEX_REAL_PORT` | `7901`                         | Real Codex app-server port the proxy fronts                                                  |
 | `OPENAI_API_KEY`            | —                                     | Enables auto-summary via gpt-5.4-nano                                                        |
 
-> Env var names retain the `CLAUDE_PEERS_*` / `CODEX_PEERS_*` prefixes for backward compatibility with prior `claude-peers-mcp` configs.
+> Env var names were renamed from `CLAUDE_PEERS_*` / `CODEX_PEERS_*` → `DREAM_TEAM_*` on 2026-04-30 alongside the repo rename. DB path moved from `~/.claude-peers.db` → `~/.dream-team.db`.
 
 ## Pull mode (Desktop App / no channel subscription)
 
 `notifications/claude/channel` only surfaces in sessions launched with `--dangerously-load-development-channels server:dream-team`. If the host can't pass that flag (most commonly the Claude Desktop App), channel pushes evaporate and inbound messages go missing.
 
-Set `CLAUDE_PEERS_MODE=pull` in the MCP server env to disable the poll loop. Messages accumulate in the broker until `check_messages` is called.
+Set `DREAM_TEAM_MODE=pull` in the MCP server env to disable the poll loop. Messages accumulate in the broker until `check_messages` is called.
 
 ```bash
 claude mcp add --scope user --transport stdio dream-team \
-  --env CLAUDE_PEERS_MODE=pull \
+  --env DREAM_TEAM_MODE=pull \
   -- bun ~/emberlabs-dream-team/server.ts
 ```
 

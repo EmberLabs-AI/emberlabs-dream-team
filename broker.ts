@@ -24,8 +24,8 @@ import type {
   Message,
 } from "./shared/types.ts";
 
-const PORT = parseInt(process.env.CLAUDE_PEERS_PORT ?? "7899", 10);
-const DB_PATH = process.env.CLAUDE_PEERS_DB ?? `${process.env.HOME}/.claude-peers.db`;
+const PORT = parseInt(process.env.DREAM_TEAM_PORT ?? "7899", 10);
+const DB_PATH = process.env.DREAM_TEAM_DB ?? `${process.env.HOME}/.dream-team.db`;
 
 // --- Database setup ---
 
@@ -299,7 +299,7 @@ function handleUnregister(body: { id: string }): void {
 
 Bun.serve({
   port: PORT,
-  hostname: process.env.CLAUDE_PEERS_BIND ?? "0.0.0.0",
+  hostname: process.env.DREAM_TEAM_BIND ?? "0.0.0.0",
   async fetch(req) {
     const url = new URL(req.url);
     const path = url.pathname;

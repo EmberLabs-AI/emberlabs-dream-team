@@ -57,18 +57,18 @@ type CodexPeerState = {
   updated_at: string;
 };
 
-const BROKER_PORT = parseInt(process.env.CLAUDE_PEERS_PORT ?? "7899", 10);
-const BROKER_URL = process.env.CLAUDE_PEERS_BROKER_URL ?? `http://127.0.0.1:${BROKER_PORT}`;
+const BROKER_PORT = parseInt(process.env.DREAM_TEAM_PORT ?? "7899", 10);
+const BROKER_URL = process.env.DREAM_TEAM_BROKER_URL ?? `http://127.0.0.1:${BROKER_PORT}`;
 const BROKER_SCRIPT = new URL("./broker.ts", import.meta.url).pathname;
-const PROXY_PORT = parseInt(process.env.CODEX_PEERS_PROXY_PORT ?? "7900", 10);
-const REAL_APP_SERVER_PORT = parseInt(process.env.CODEX_PEERS_REAL_APP_SERVER_PORT ?? "7901", 10);
+const PROXY_PORT = parseInt(process.env.DREAM_TEAM_CODEX_PROXY_PORT ?? "7900", 10);
+const REAL_APP_SERVER_PORT = parseInt(process.env.DREAM_TEAM_CODEX_REAL_PORT ?? "7901", 10);
 const PROXY_URL = `ws://127.0.0.1:${PROXY_PORT}`;
 const REAL_APP_SERVER_URL = `ws://127.0.0.1:${REAL_APP_SERVER_PORT}`;
 const REAL_READY_URL = `http://127.0.0.1:${REAL_APP_SERVER_PORT}/readyz`;
 const STATE_PATH =
-  process.env.CODEX_PEERS_STATE ??
-  join(process.env.HOME ?? ".", ".claude-peers", "codex-active.json");
-const POLL_INTERVAL_MS = parseInt(process.env.CODEX_PEERS_POLL_INTERVAL_MS ?? "1000", 10);
+  process.env.DREAM_TEAM_CODEX_STATE ??
+  join(process.env.HOME ?? ".", ".dream-team", "codex-active.json");
+const POLL_INTERVAL_MS = parseInt(process.env.DREAM_TEAM_CODEX_POLL_INTERVAL_MS ?? "1000", 10);
 const HEARTBEAT_INTERVAL_MS = 15_000;
 
 function log(msg: string) {
