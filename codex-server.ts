@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 /**
- * Codex peer adapter for claude-peers.
+ * Codex peer adapter for dream-team (formerly claude-peers).
  *
  * Modes:
  *   bun codex-server.ts proxy  # WebSocket proxy: Codex TUI -> adapter -> real Codex app-server
@@ -72,7 +72,7 @@ const POLL_INTERVAL_MS = parseInt(process.env.CODEX_PEERS_POLL_INTERVAL_MS ?? "1
 const HEARTBEAT_INTERVAL_MS = 15_000;
 
 function log(msg: string) {
-  console.error(`[codex-peers] ${msg}`);
+  console.error(`[dream-team:codex] ${msg}`);
 }
 
 async function brokerFetch<T>(path: string, body: unknown, brokerUrl = BROKER_URL): Promise<T> {

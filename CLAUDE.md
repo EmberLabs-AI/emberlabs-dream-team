@@ -4,14 +4,17 @@ globs: "*.ts, *.tsx, *.html, *.css, *.js, *.jsx, package.json"
 alwaysApply: false
 ---
 
-# claude-peers
+# dream-team (Ember Labs Dream Team)
 
-Peer discovery and messaging MCP channel for Claude Code instances.
+Peer discovery and messaging MCP for Claude Code + Codex CLI instances. Cross-runtime, cross-machine over Tailscale.
+
+Renamed 2026-04-30 from `claude-peers-mcp`. MCP server name is `dream-team`. Repo: `EmberLabs-AI/emberlabs-dream-team`.
 
 ## Architecture
 
-- `broker.ts` — Singleton HTTP daemon on localhost:7899 + SQLite. Auto-launched by the MCP server.
-- `server.ts` — MCP stdio server, one per Claude Code instance. Connects to broker, exposes tools, pushes channel notifications.
+- `broker.ts` — Singleton HTTP daemon on localhost:7899 + SQLite. Auto-launched by the first MCP server. Tracks peers with `peer_type` + `delivery_mode`.
+- `server.ts` — MCP stdio server for Claude Code, one per instance. Connects to broker, exposes tools, pushes via `notifications/claude/channel`.
+- `codex-server.ts` — Codex CLI adapter. Two modes: `proxy` (WebSocket proxy fronting the real Codex app-server, owns peer registration + `turn/steer` injection) and `mcp` (stdio MCP tools exposed to the Codex model).
 - `shared/types.ts` — Shared TypeScript types for broker API.
 - `shared/summarize.ts` — Auto-summary generation via gpt-5.4-nano.
 - `cli.ts` — CLI utility for inspecting broker state.
@@ -19,11 +22,15 @@ Peer discovery and messaging MCP channel for Claude Code instances.
 ## Running
 
 ```bash
-# Start Claude Code with the channel:
-claude --dangerously-load-development-channels server:claude-peers
+# Claude Code with channel push:
+claude --dangerously-load-development-channels server:dream-team
 
-# Or just add to .mcp.json and use as regular MCP (no channel push, but tools work):
-# { "claude-peers": { "command": "bun", "args": ["./server.ts"] } }
+# Or as a regular MCP (no channel push, but tools work):
+# { "dream-team": { "command": "bun", "args": ["./server.ts"] } }
+
+# Codex CLI through the proxy:
+bun codex-server.ts proxy &
+codex --remote ws://127.0.0.1:7900
 
 # CLI:
 bun cli.ts status

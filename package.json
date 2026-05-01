@@ -1,7 +1,7 @@
 {
-  "name": "claude-peers",
-  "version": "0.1.0",
-  "description": "Peer discovery and messaging for Claude Code instances",
+  "name": "dream-team",
+  "version": "0.2.0",
+  "description": "Ember Labs Dream Team — peer discovery and messaging across Claude Code + Codex CLI, single machine or cross-machine over Tailscale",
   "module": "index.ts",
   "type": "module",
   "private": true,

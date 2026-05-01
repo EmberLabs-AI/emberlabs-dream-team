@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 /**
- * claude-peers CLI
+ * dream-team CLI (formerly claude-peers)
  *
  * Utility commands for managing the broker and inspecting peers.
  *
@@ -159,7 +159,7 @@ switch (cmd) {
   }
 
   default:
-    console.log(`claude-peers CLI
+    console.log(`dream-team CLI
 
 Usage:
   bun cli.ts status          Show broker status and all peers

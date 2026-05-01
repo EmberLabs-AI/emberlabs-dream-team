@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 /**
- * claude-peers broker daemon
+ * dream-team broker daemon (formerly claude-peers)
  *
  * A singleton HTTP server on localhost:7899 backed by SQLite.
  * Tracks all registered Claude Code peers and routes messages between them.
@@ -308,7 +308,7 @@ Bun.serve({
       if (path === "/health") {
         return Response.json({ status: "ok", peers: (selectAllPeers.all() as Peer[]).length });
       }
-      return new Response("claude-peers broker", { status: 200 });
+      return new Response("dream-team broker", { status: 200 });
     }
 
     try {
@@ -348,4 +348,4 @@ Bun.serve({
   },
 });
 
-console.error(`[claude-peers broker] listening on 127.0.0.1:${PORT} (db: ${DB_PATH})`);
+console.error(`[dream-team broker] listening on 127.0.0.1:${PORT} (db: ${DB_PATH})`);

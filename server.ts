@@ -1,16 +1,16 @@
 #!/usr/bin/env bun
 /**
- * claude-peers MCP server
+ * dream-team MCP server (formerly claude-peers)
  *
  * Spawned by Claude Code as a stdio MCP server (one per instance).
  * Connects to the shared broker daemon for peer discovery and messaging.
  * Declares claude/channel capability to push inbound messages immediately.
  *
  * Usage:
- *   claude --dangerously-load-development-channels server:claude-peers
+ *   claude --dangerously-load-development-channels server:dream-team
  *
  * With .mcp.json:
- *   { "claude-peers": { "command": "bun", "args": ["./server.ts"] } }
+ *   { "dream-team": { "command": "bun", "args": ["./server.ts"] } }
  */
 
 import { hostname } from "node:os";
@@ -107,7 +107,7 @@ async function ensureBroker(): Promise<void> {
 
 function log(msg: string) {
   // MCP stdio servers must only use stderr for logging (stdout is the MCP protocol)
-  console.error(`[claude-peers] ${msg}`);
+  console.error(`[dream-team] ${msg}`);
 }
 
 async function getGitRoot(cwd: string): Promise<string | null> {
@@ -175,25 +175,25 @@ async function ackMessages(ids: number[]): Promise<void> {
 // --- MCP Server ---
 
 const mcp = new Server(
-  { name: "claude-peers", version: "0.1.0" },
+  { name: "dream-team", version: "0.2.0" },
   {
     capabilities: {
       experimental: { "claude/channel": {} },
       tools: {},
     },
-    instructions: `You are connected to the claude-peers network. Other Claude Code instances on this machine can see you and send you messages.
+    instructions: `You are connected to the Ember Labs dream-team peer network. Other agent instances (Claude Code and Codex CLI) on this machine — and any reachable Tailscale peers — can see you and send you messages.
 
-IMPORTANT: When you receive a <channel source="claude-peers" ...> message, RESPOND IMMEDIATELY. Do not wait until your current task is finished. Pause what you are doing, reply to the message using send_message, then resume your work. Treat incoming peer messages like a coworker tapping you on the shoulder — answer right away, even if you're in the middle of something.
+IMPORTANT: When you receive a <channel source="dream-team" ...> message, RESPOND IMMEDIATELY. Do not wait until your current task is finished. Pause what you are doing, reply to the message using send_message, then resume your work. Treat incoming peer messages like a coworker tapping you on the shoulder — answer right away, even if you're in the middle of something.
 
 Read the from_id, from_summary, and from_cwd attributes to understand who sent the message. Reply by calling send_message with their from_id.
 
 Available tools:
-- list_peers: Discover other Claude Code instances (scope: machine/directory/repo)
-- send_message: Send a message to another instance by ID
+- list_peers: Discover other peers (scope: machine/directory/repo). Each peer reports its type (claude or codex) and delivery mode.
+- send_message: Send a message to another peer by ID
 - set_summary: Set a 1-2 sentence summary of what you're working on (visible to other peers)
 - check_messages: Manually check for new messages
 
-When you start, proactively call set_summary to describe what you're working on. This helps other instances understand your context.`,
+When you start, proactively call set_summary to describe what you're working on. This helps other peers understand your context.`,
   }
 );
 
