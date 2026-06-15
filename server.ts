@@ -76,10 +76,35 @@ async function isBrokerAlive(): Promise<boolean> {
   }
 }
 
+function brokerIsLocal(): boolean {
+  try {
+    const host = new URL(BROKER_URL).hostname;
+    return host === "127.0.0.1" || host === "localhost" || host === "::1";
+  } catch {
+    return false;
+  }
+}
+
 async function ensureBroker(): Promise<void> {
   if (await isBrokerAlive()) {
     log("Broker already running");
     return;
+  }
+
+  // Remote broker (e.g. the Mac over Tailscale): NEVER spawn a local broker —
+  // doing so creates a split-brain island where this machine's peers can't see
+  // the remote ones. Instead retry to ride out a boot-race (Tailscale/DNS not up
+  // yet at startup), then fail cleanly so the MCP surfaces a real error.
+  if (!brokerIsLocal()) {
+    log(`Remote broker not reachable yet (${BROKER_URL}); retrying for up to 15s...`);
+    for (let i = 0; i < 15; i++) {
+      await new Promise((r) => setTimeout(r, 1000));
+      if (await isBrokerAlive()) {
+        log("Remote broker reachable");
+        return;
+      }
+    }
+    throw new Error(`Remote broker is not reachable after 15s: ${BROKER_URL}`);
   }
 
   log("Starting broker daemon...");
