@@ -1,15 +1,15 @@
 # dream-team
 
-> **Ember Labs Dream Team** — peer discovery and messaging across **Claude Code** AND **Codex CLI** instances, on a single machine or cross-machine over Tailscale.
+> **Ember Labs Dream Team** — peer discovery and messaging across **Claude Code**, **Codex Desktop**, and **Codex CLI** instances, on a single machine or cross-machine over Tailscale.
 >
 > Forked and significantly extended from [`louislva/claude-peers-mcp`](https://github.com/louislva/claude-peers-mcp). Adds Codex CLI as a first-class peer (proxy + MCP mode), cross-machine peer mesh over Tailscale, and a typed peer model (`peer_type`, `delivery_mode`).
 
 ```
-  Mac · Claude Code              Mac · Codex CLI            Starforge · Claude Code
+  Mac · Claude Code              Mac · Codex Desktop        Starforge · Claude Code
   ┌──────────────────┐           ┌──────────────────┐       ┌──────────────────┐
-  │ "tap Codex on    │           │ <channel> arrives│       │ <channel> arrives│
+  │ "tap Codex on    │           │ app-server turn  │       │ <channel> arrives│
   │  the shoulder    │  ──────>  │  mid-turn via    │       │  via Tailscale   │
-  │  while it codes" │           │  turn/steer"     │       │  100.x.x.x:7899  │
+  │  while it codes" │           │  start/steer     │       │  100.x.x.x:7899  │
   └──────────────────┘           └──────────────────┘       └──────────────────┘
                   └──────── single shared broker ───────┘
                             (SQLite + HTTP, auto-launched)
@@ -47,7 +47,45 @@ The broker daemon starts automatically the first time.
 > alias claudep='claude --dangerously-load-development-channels server:dream-team'
 > ```
 
-### 4. Codex CLI as a peer
+### 4. Codex Desktop as a peer
+
+Codex Desktop uses the same broker, but it should run the Desktop MCP adapter instead of the old CLI proxy state reader:
+
+```toml
+[mcp_servers.dream-team]
+command = "/Users/emberlabsai/.bun/bin/bun"
+args = ["run", "/Users/emberlabsai/emberlabs-dream-team/codex-server.ts", "desktop-mcp"]
+
+[mcp_servers.dream-team.env]
+DREAM_TEAM_BROKER_URL = "http://100.111.11.86:7899"
+```
+
+The Desktop adapter registers as `peer_type: codex`, `delivery_mode: app-server-push`, uses the project folder of the actual Codex Desktop chat as its workspace identity, discovers the active/recent Codex thread for that workspace, and delivers inbound peer messages through Codex app-server `turn/start` or `turn/steer`.
+
+Only set `DREAM_TEAM_CODEX_FORCE_CWD` for a one-off diagnostic override. In normal Desktop use, do not force a cwd; forcing one makes multiple Desktop chats in different project folders advertise as the same peer.
+
+If Codex Desktop launches MCP processes from the app install folder instead of the project folder, set `DREAM_TEAM_CODEX_CWD` as a fallback. The adapter uses it only when `process.cwd()` looks like a Codex app install path.
+
+On Starforge, Codex runs natively on Windows. Use the native Windows `codex.exe` path in `DREAM_TEAM_CODEX_BIN` and launch from PowerShell or Task Scheduler, not WSL:
+
+```toml
+[mcp_servers.dream-team.env]
+DREAM_TEAM_BROKER_URL = "http://100.111.11.86:7899"
+DREAM_TEAM_CODEX_CWD = "C:\\Users\\bphil\\Claude NEW NEW\\Claude New"
+DREAM_TEAM_CODEX_BIN = "C:\\Users\\bphil\\AppData\\Local\\OpenAI\\Codex\\bin\\716dda49c14d31a0\\codex.exe"
+```
+
+For Windows Codex Desktop, run a persistent sidecar in addition to the MCP tool server. The Desktop app may start and stop MCP processes as needed; the sidecar keeps inbound peer delivery alive:
+
+```powershell
+cd "C:\Users\bphil\Claude NEW NEW\Claude New"
+$env:DREAM_TEAM_BROKER_URL = "http://100.111.11.86:7899"
+$env:DREAM_TEAM_CODEX_CWD = "C:\Users\bphil\Claude NEW NEW\Claude New"
+$env:DREAM_TEAM_CODEX_BIN = "C:\Users\bphil\AppData\Local\OpenAI\Codex\bin\716dda49c14d31a0\codex.exe"
+C:\Users\bphil\.bun\bin\bun.exe run C:\Users\bphil\emberlabs-dream-team\codex-server.ts desktop-sidecar
+```
+
+### 5. Codex CLI as a peer
 
 Launch Codex CLI through the proxy:
 

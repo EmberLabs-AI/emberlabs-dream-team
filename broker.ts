@@ -10,6 +10,7 @@
  */
 
 import { Database } from "bun:sqlite";
+import { createHash } from "node:crypto";
 import type {
   RegisterRequest,
   RegisterResponse,
@@ -147,6 +148,10 @@ const markDeliveredForPeer = db.prepare(`
   UPDATE messages SET delivered = 1 WHERE id = ? AND to_id = ?
 `);
 
+const moveUndeliveredMessages = db.prepare(`
+  UPDATE messages SET to_id = ? WHERE to_id = ? AND delivered = 0
+`);
+
 // --- Generate peer ID ---
 
 function generateId(): string {
@@ -158,10 +163,17 @@ function generateId(): string {
   return id;
 }
 
+function stableCodexDesktopId(machineId: string, cwd: string, threadId: string | null): string {
+  const hash = createHash("sha256")
+    .update(`${machineId}\0${cwd}\0${threadId ?? ""}\0codex\0app-server-push`)
+    .digest("hex")
+    .slice(0, 6);
+  return `cx${hash}`;
+}
+
 // --- Request handlers ---
 
 function handleRegister(body: RegisterRequest): RegisterResponse {
-  const id = generateId();
   const now = new Date().toISOString();
   // Backwards compat: older clients omit machine_id. Treat as empty string
   // so their peers share a single "unknown-host" bucket, which keeps the
@@ -172,6 +184,8 @@ function handleRegister(body: RegisterRequest): RegisterResponse {
   // match the legacy behavior so the live Claude mesh keeps working.
   const peerType = body.peer_type ?? "claude";
   const deliveryMode = body.delivery_mode ?? "auto";
+  const isCodexDesktop = peerType === "codex" && deliveryMode === "app-server-push";
+  const id = isCodexDesktop ? stableCodexDesktopId(machineId, body.cwd, body.tty) : generateId();
 
   // Dedup only within the SAME host. Previously the broker dedup'd on pid
   // alone, which silently evicted cross-machine peers whenever two macOS
@@ -182,6 +196,28 @@ function handleRegister(body: RegisterRequest): RegisterResponse {
     .get(body.pid, machineId) as { id: string } | null;
   if (existing) {
     deletePeer.run(existing.id);
+  }
+
+  if (isCodexDesktop) {
+    const duplicates = db
+      .query(
+        `SELECT id FROM peers
+         WHERE machine_id = ?
+           AND cwd = ?
+           AND peer_type = 'codex'
+           AND delivery_mode = 'app-server-push'`
+      )
+      .all(machineId, body.cwd) as { id: string }[];
+
+    for (const peer of duplicates) {
+      const duplicate = db.query("SELECT tty FROM peers WHERE id = ?").get(peer.id) as { tty: string | null } | null;
+      if ((duplicate?.tty ?? null) !== (body.tty ?? null)) continue;
+      if (peer.id !== id) moveUndeliveredMessages.run(id, peer.id);
+      deletePeer.run(peer.id);
+    }
+  } else {
+    const existingId = db.query("SELECT id FROM peers WHERE id = ?").get(id) as { id: string } | null;
+    if (existingId) deletePeer.run(existingId.id);
   }
 
   insertPeer.run(

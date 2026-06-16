@@ -1,4 +1,6 @@
-// Unique ID for each agent instance (generated on registration)
+// Unique ID for each peer. Most peers get a generated ID on registration;
+// Codex Desktop app-server peers use a stable machine+workspace(+thread when
+// available) ID so app restarts do not create a new visible peer every time.
 export type PeerId = string;
 
 // Agent runtime that owns this peer. Drives discovery filters and signals to
@@ -10,9 +12,9 @@ export type PeerType = "claude" | "codex";
 //                        notifications/claude/channel (current Claude default).
 //   "pull"             — peer drains via check_messages tool only (no auto-push).
 //                        Use this when the host can't subscribe to dev channels.
-//   "app-server-push"  — peer is Codex; a sidecar adapter watches the broker
-//                        and injects upstream via Codex app-server turn/start
-//                        or turn/steer.
+//   "app-server-push"  — peer is Codex; a CLI proxy or Desktop sidecar watches
+//                        the broker and injects upstream via Codex app-server
+//                        turn/start or turn/steer.
 export type DeliveryMode = "auto" | "pull" | "app-server-push";
 
 export interface Peer {
@@ -24,6 +26,7 @@ export interface Peer {
   summary: string;
   registered_at: string; // ISO timestamp
   last_seen: string; // ISO timestamp
+  machine_id: string;
   // New fields (added with the Codex peer work). Defaults at the broker keep
   // pre-Codex clients working unchanged.
   peer_type: PeerType;

@@ -9,6 +9,8 @@
     "broker": "bun broker.ts",
     "server": "bun server.ts",
     "codex:mcp": "bun codex-server.ts mcp",
+    "codex:desktop-mcp": "bun codex-server.ts desktop-mcp",
+    "codex:desktop-sidecar": "bun codex-server.ts desktop-sidecar",
     "codex:proxy": "bun codex-server.ts proxy",
     "test": "bun test"
   },

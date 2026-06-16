@@ -5,6 +5,8 @@
  * Modes:
  *   bun codex-server.ts proxy  # WebSocket proxy: Codex TUI -> adapter -> real Codex app-server
  *   bun codex-server.ts mcp    # MCP stdio tools exposed inside Codex
+ *   bun codex-server.ts desktop-mcp # Codex Desktop MCP + app-server delivery adapter
+ *   bun codex-server.ts desktop-sidecar # Persistent Desktop delivery adapter only
  *
  * The proxy owns the Codex peer registration and automatic inbound delivery.
  * The MCP mode reads the proxy state file and gives the model explicit tools
@@ -12,7 +14,7 @@
  */
 
 import { hostname } from "node:os";
-import { mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -20,6 +22,7 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
+import type { Subprocess } from "bun";
 import type {
   AckMessagesRequest,
   HeartbeatResponse,
@@ -45,6 +48,21 @@ type AppServerResponse = {
   params?: unknown;
 };
 
+type AppServerNotification = {
+  method: string;
+  params?: unknown;
+};
+
+type ThreadListResponse = {
+  data: Array<{ id: string; cwd?: string; name?: string | null; preview?: string }>;
+  nextCursor?: string | null;
+};
+
+type ThreadLoadedListResponse = {
+  data: Array<{ id: string }>;
+  nextCursor?: string | null;
+};
+
 type CodexPeerState = {
   peer_id: PeerId;
   broker_url: string;
@@ -57,6 +75,11 @@ type CodexPeerState = {
   updated_at: string;
 };
 
+type McpStateAccess = {
+  read: () => CodexPeerState;
+  updateSummary?: (summary: string) => Promise<void>;
+};
+
 const BROKER_PORT = parseInt(process.env.DREAM_TEAM_PORT ?? "7899", 10);
 const BROKER_URL = process.env.DREAM_TEAM_BROKER_URL ?? `http://127.0.0.1:${BROKER_PORT}`;
 const BROKER_SCRIPT = new URL("./broker.ts", import.meta.url).pathname;
@@ -65,14 +88,36 @@ const REAL_APP_SERVER_PORT = parseInt(process.env.DREAM_TEAM_CODEX_REAL_PORT ?? 
 const PROXY_URL = `ws://127.0.0.1:${PROXY_PORT}`;
 const REAL_APP_SERVER_URL = `ws://127.0.0.1:${REAL_APP_SERVER_PORT}`;
 const REAL_READY_URL = `http://127.0.0.1:${REAL_APP_SERVER_PORT}/readyz`;
+const HOME_DIR = process.env.HOME ?? process.env.USERPROFILE ?? ".";
 const STATE_PATH =
   process.env.DREAM_TEAM_CODEX_STATE ??
-  join(process.env.HOME ?? ".", ".dream-team", "codex-active.json");
+  join(HOME_DIR, ".dream-team", "codex-active.json");
 const POLL_INTERVAL_MS = parseInt(process.env.DREAM_TEAM_CODEX_POLL_INTERVAL_MS ?? "1000", 10);
 const HEARTBEAT_INTERVAL_MS = 15_000;
+const DESKTOP_CODEX_BIN =
+  process.env.DREAM_TEAM_CODEX_BIN ??
+  (process.platform === "darwin" && existsSync("/Applications/Codex.app/Contents/Resources/codex")
+    ? "/Applications/Codex.app/Contents/Resources/codex"
+    : "codex");
 
 function log(msg: string) {
   console.error(`[dream-team:codex] ${msg}`);
+}
+
+function isCodexAppInstallCwd(cwd: string): boolean {
+  const normalized = cwd.replaceAll("\\", "/").toLowerCase();
+  return (
+    normalized.includes("/windowsapps/openai.codex_") ||
+    normalized.includes("/openai/codex/app") ||
+    normalized.includes("/codex.app/contents/")
+  );
+}
+
+function desktopWorkspaceCwd(): string {
+  if (process.env.DREAM_TEAM_CODEX_FORCE_CWD) return process.env.DREAM_TEAM_CODEX_FORCE_CWD;
+  const cwd = process.cwd();
+  if (isCodexAppInstallCwd(cwd) && process.env.DREAM_TEAM_CODEX_CWD) return process.env.DREAM_TEAM_CODEX_CWD;
+  return cwd;
 }
 
 async function brokerFetch<T>(path: string, body: unknown, brokerUrl = BROKER_URL): Promise<T> {
@@ -177,6 +222,424 @@ function writeState(state: CodexPeerState) {
   mkdirSync(dirname(STATE_PATH), { recursive: true });
   state.updated_at = new Date().toISOString();
   writeFileSync(STATE_PATH, JSON.stringify(state, null, 2));
+}
+
+async function parentCommandLine(): Promise<string | null> {
+  const ppid = process.ppid;
+  if (!ppid) return null;
+
+  try {
+    if (process.platform === "win32") {
+      const proc = Bun.spawn(["wmic", "process", "where", `ProcessId=${ppid}`, "get", "CommandLine", "/value"], {
+        stdout: "pipe",
+        stderr: "ignore",
+      });
+      const text = await new Response(proc.stdout).text();
+      await proc.exited;
+      return text;
+    }
+
+    const proc = Bun.spawn(["ps", "-p", String(ppid), "-o", "command="], {
+      stdout: "pipe",
+      stderr: "ignore",
+    });
+    const text = await new Response(proc.stdout).text();
+    await proc.exited;
+    return text.trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+async function isNestedPrivateAppServerMcp(): Promise<boolean> {
+  if (process.env.DREAM_TEAM_CODEX_NO_RECURSE === "1") return true;
+  const command = await parentCommandLine();
+  if (!command) return false;
+  return /app-server\s+--listen\s+stdio:\/\//i.test(command);
+}
+
+class AppServerStdioClient {
+  private proc: Subprocess<"pipe", "pipe", "pipe"> | null = null;
+  private nextId = 1;
+  private pending = new Map<
+    number | string,
+    { resolve: (value: AppServerResponse) => void; reject: (error: Error) => void; method: string }
+  >();
+  private buffer = "";
+
+  constructor(
+    private readonly command: string,
+    private readonly cwd: string,
+    private readonly onNotification: (message: AppServerNotification) => void
+  ) {}
+
+  async start(): Promise<void> {
+    this.proc = Bun.spawn([this.command, "app-server", "--listen", "stdio://"], {
+      cwd: this.cwd,
+      env: { ...process.env, DREAM_TEAM_CODEX_NO_RECURSE: "1" },
+      stdin: "pipe",
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    this.readStdout();
+    this.readStderr();
+
+    const init = await this.request("initialize", {
+      clientInfo: {
+        name: "dream-team-desktop",
+        title: "Dream Team Desktop Adapter",
+        version: "0.1.0",
+      },
+      capabilities: {
+        experimentalApi: true,
+        requestAttestation: false,
+      },
+    });
+    if (init.error) {
+      throw new Error(`Codex app-server initialize failed: ${JSON.stringify(init.error)}`);
+    }
+    const userAgent = (init.result as { userAgent?: string } | undefined)?.userAgent ?? "unknown";
+    log(`Connected to Codex app-server (${userAgent})`);
+  }
+
+  async request(method: string, params?: unknown): Promise<AppServerResponse> {
+    if (!this.proc) throw new Error("Codex app-server client is not started");
+    const id = this.nextId++;
+    const payload = params === undefined ? { jsonrpc: "2.0", id, method } : { jsonrpc: "2.0", id, method, params };
+    const promise = new Promise<AppServerResponse>((resolve, reject) => {
+      this.pending.set(id, { resolve, reject, method });
+    });
+    this.proc.stdin.write(`${JSON.stringify(payload)}\n`);
+    return promise;
+  }
+
+  close(): void {
+    this.proc?.kill();
+    this.proc = null;
+    for (const entry of this.pending.values()) {
+      entry.reject(new Error("Codex app-server closed"));
+    }
+    this.pending.clear();
+  }
+
+  private async readStdout(): Promise<void> {
+    if (!this.proc) return;
+    const reader = this.proc.stdout.getReader();
+    const decoder = new TextDecoder();
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        this.buffer += decoder.decode(value, { stream: true });
+        let newline = this.buffer.indexOf("\n");
+        while (newline >= 0) {
+          const line = this.buffer.slice(0, newline).trim();
+          this.buffer = this.buffer.slice(newline + 1);
+          if (line) this.handleLine(line);
+          newline = this.buffer.indexOf("\n");
+        }
+      }
+    } catch (e) {
+      log(`Codex app-server stdout error: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+
+  private async readStderr(): Promise<void> {
+    if (!this.proc) return;
+    const reader = this.proc.stderr.getReader();
+    const decoder = new TextDecoder();
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        const text = decoder.decode(value);
+        for (const line of text.split("\n")) {
+          const trimmed = line.trim();
+          if (trimmed) log(`Codex app-server stderr: ${trimmed}`);
+        }
+      }
+    } catch {
+      // Best effort logging only.
+    }
+  }
+
+  private handleLine(line: string): void {
+    let message: AppServerResponse;
+    try {
+      message = JSON.parse(line) as AppServerResponse;
+    } catch {
+      log(`Ignoring non-JSON app-server line: ${line.slice(0, 200)}`);
+      return;
+    }
+
+    if (message.id !== undefined && this.pending.has(message.id)) {
+      const pending = this.pending.get(message.id)!;
+      this.pending.delete(message.id);
+      pending.resolve(message);
+      return;
+    }
+
+    if (message.method) {
+      this.onNotification(message as AppServerNotification);
+    }
+  }
+}
+
+class DesktopCodexAdapter {
+  private appServer: AppServerStdioClient | null = null;
+  private state: CodexPeerState | null = null;
+  private threadId: string | null = process.env.DREAM_TEAM_CODEX_THREAD_ID ?? null;
+  private activeTurnId: string | null = null;
+  private turnInFlight = false;
+  private pollTimer: ReturnType<typeof setInterval> | null = null;
+  private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  private pendingTurnStart = false;
+  private claimedMessages = new Set<number>();
+  private loadedThreadId: string | null = null;
+
+  constructor(private readonly cwd: string) {}
+
+  getState(): CodexPeerState {
+    if (!this.state) throw new Error("Codex Desktop peer is not registered yet");
+    return this.state;
+  }
+
+  async updateSummary(summary: string): Promise<void> {
+    if (!this.state) throw new Error("Codex Desktop peer is not registered yet");
+    await brokerFetch("/set-summary", { id: this.state.peer_id, summary }, this.state.broker_url);
+    this.state = { ...this.state, summary };
+    writeState(this.state);
+  }
+
+  async start(): Promise<void> {
+    await ensureBroker();
+    this.appServer = new AppServerStdioClient(DESKTOP_CODEX_BIN, this.cwd, (message) => this.handleNotification(message));
+    await this.appServer.start();
+
+    const gitRoot = await getGitRoot(this.cwd);
+    await this.discoverThread();
+
+    const summary = `Codex Desktop peer in ${this.cwd}`;
+    const reg = await brokerFetch<RegisterResponse>("/register", {
+      pid: process.pid,
+      cwd: this.cwd,
+      git_root: gitRoot,
+      tty: this.threadId,
+      summary,
+      machine_id: hostname(),
+      peer_type: "codex",
+      delivery_mode: "app-server-push",
+    } satisfies RegisterRequest);
+
+    this.state = {
+      peer_id: reg.id,
+      broker_url: BROKER_URL,
+      cwd: this.cwd,
+      git_root: gitRoot,
+      proxy_url: "desktop-mcp",
+      real_app_server_url: "stdio://",
+      thread_id: this.threadId,
+      summary,
+      updated_at: new Date().toISOString(),
+    };
+    writeState(this.state);
+    log(`Registered Codex Desktop peer ${reg.id} (thread=${this.threadId ?? "none yet"})`);
+
+    this.pollTimer = setInterval(() => {
+      this.pollAndInject().catch((e) => log(`Desktop poll error: ${e instanceof Error ? e.message : String(e)}`));
+    }, POLL_INTERVAL_MS);
+
+    this.heartbeatTimer = setInterval(() => {
+      this.heartbeat().catch(() => {
+        // Broker may be briefly unavailable.
+      });
+    }, HEARTBEAT_INTERVAL_MS);
+  }
+
+  async stop(): Promise<void> {
+    if (this.pollTimer) clearInterval(this.pollTimer);
+    if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
+    if (this.state) {
+      try {
+        await brokerFetch("/unregister", { id: this.state.peer_id });
+      } catch {
+        // best effort
+      }
+    }
+    this.appServer?.close();
+  }
+
+  private handleNotification(message: AppServerNotification): void {
+    if (message.method === "thread/started") {
+      const params = message.params as { thread?: { id?: string } };
+      if (params.thread?.id) this.updateThread(params.thread.id);
+    } else if (message.method === "turn/started") {
+      const params = message.params as { turn?: { id?: string } };
+      this.activeTurnId = params.turn?.id ?? null;
+      this.turnInFlight = Boolean(this.activeTurnId);
+      this.pendingTurnStart = false;
+    } else if (message.method === "turn/completed") {
+      this.activeTurnId = null;
+      this.turnInFlight = false;
+      this.pendingTurnStart = false;
+    }
+  }
+
+  private updateThread(threadId: string | null): void {
+    if (this.threadId === threadId) return;
+    this.threadId = threadId;
+    if (!this.state) return;
+    this.state = { ...this.state, thread_id: threadId, updated_at: new Date().toISOString() };
+    writeState(this.state);
+    this.reregisterForThread().catch((e) =>
+      log(`Thread re-register failed: ${e instanceof Error ? e.message : String(e)}`)
+    );
+  }
+
+  private async reregisterForThread(): Promise<void> {
+    if (!this.state) return;
+    const oldPeerId = this.state.peer_id;
+    const next = await brokerFetch<RegisterResponse>("/register", {
+      pid: process.pid,
+      cwd: this.state.cwd,
+      git_root: this.state.git_root,
+      tty: this.state.thread_id,
+      summary: this.state.summary,
+      machine_id: hostname(),
+      peer_type: "codex",
+      delivery_mode: "app-server-push",
+    } satisfies RegisterRequest);
+
+    this.state = { ...this.state, peer_id: next.id, updated_at: new Date().toISOString() };
+    writeState(this.state);
+    if (next.id !== oldPeerId) {
+      try {
+        await brokerFetch("/unregister", { id: oldPeerId }, this.state.broker_url);
+      } catch {
+        // Best effort: the broker may already have evicted the old temporary identity.
+      }
+      log(`Moved Codex Desktop peer from ${oldPeerId} to ${next.id} (thread=${this.threadId ?? "none"})`);
+    }
+  }
+
+  private async discoverThread(): Promise<void> {
+    if (!this.appServer || this.threadId) return;
+
+    const listed = await this.appServer.request("thread/list", {
+      limit: 1,
+      sortKey: "updated_at",
+      sortDirection: "desc",
+      archived: false,
+      cwd: this.cwd,
+    });
+    const listedData = (listed.result as ThreadListResponse | undefined)?.data ?? [];
+    if (listedData[0]?.id) {
+      this.threadId = listedData[0].id;
+      return;
+    }
+
+    const loaded = await this.appServer.request("thread/loaded/list", { limit: 5 });
+    const loadedData = (loaded.result as ThreadLoadedListResponse | undefined)?.data ?? [];
+    if (loadedData[0]?.id) {
+      this.threadId = loadedData[0].id;
+      this.loadedThreadId = loadedData[0].id;
+    }
+  }
+
+  private async heartbeat(): Promise<void> {
+    if (!this.state) return;
+    const res = await brokerFetch<HeartbeatResponse>("/heartbeat", { id: this.state.peer_id });
+    if (!res.stale) return;
+
+    const next = await brokerFetch<RegisterResponse>("/register", {
+      pid: process.pid,
+      cwd: this.state.cwd,
+      git_root: this.state.git_root,
+      tty: this.state.thread_id,
+      summary: this.state.summary,
+      machine_id: hostname(),
+      peer_type: "codex",
+      delivery_mode: "app-server-push",
+    } satisfies RegisterRequest);
+    this.state = { ...this.state, peer_id: next.id };
+    writeState(this.state);
+    log(`Re-registered Codex Desktop peer ${next.id}`);
+  }
+
+  private async pollAndInject(): Promise<void> {
+    if (!this.state || !this.appServer) return;
+    if (!this.threadId) {
+      await this.discoverThread();
+      if (!this.threadId) return;
+      this.updateThread(this.threadId);
+    }
+
+    const result = await brokerFetch<PollMessagesResponse>("/poll-messages", {
+      id: this.state.peer_id,
+      ack: false,
+    });
+    const fresh = result.messages.filter((message) => !this.claimedMessages.has(message.id));
+    if (fresh.length === 0) return;
+    for (const message of fresh) this.claimedMessages.add(message.id);
+    await this.injectMessages(fresh);
+  }
+
+  private async injectMessages(messages: Message[]): Promise<void> {
+    if (!this.state || !this.appServer || !this.threadId || messages.length === 0 || this.pendingTurnStart) return;
+
+    if (!(await this.ensureThreadLoaded())) {
+      for (const message of messages) this.claimedMessages.delete(message.id);
+      return;
+    }
+
+    const peers = await peerContext(this.state.cwd, this.state.git_root);
+    const peerPayload = formatPeerMessages(messages, peers);
+    const messageIds = messages.map((message) => message.id);
+    const canSteer = this.turnInFlight && this.activeTurnId;
+    const method = canSteer ? "turn/steer" : "turn/start";
+    const params = canSteer
+      ? {
+          threadId: this.threadId,
+          expectedTurnId: this.activeTurnId,
+          input: [textInput(peerPayload)],
+        }
+      : {
+          threadId: this.threadId,
+          input: [textInput(peerPayload)],
+          cwd: this.state.cwd,
+        };
+
+    if (!canSteer) this.pendingTurnStart = true;
+    const response = await this.appServer.request(method, params);
+    if (!canSteer) this.pendingTurnStart = false;
+
+    if (response.error) {
+      for (const id of messageIds) this.claimedMessages.delete(id);
+      log(`Desktop ${method} failed: ${JSON.stringify(response.error)}`);
+      return;
+    }
+
+    await brokerFetch("/ack", { id: this.state.peer_id, ids: messageIds } satisfies AckMessagesRequest);
+    for (const id of messageIds) this.claimedMessages.delete(id);
+    log(`Injected ${messages.length} peer message(s) into Codex Desktop via ${method}`);
+  }
+
+  private async ensureThreadLoaded(): Promise<boolean> {
+    if (!this.appServer || !this.threadId) return false;
+    if (this.loadedThreadId === this.threadId) return true;
+
+    const response = await this.appServer.request("thread/resume", {
+      threadId: this.threadId,
+      cwd: this.cwd,
+    });
+    if (response.error) {
+      log(`Desktop thread/resume failed: ${JSON.stringify(response.error)}`);
+      return false;
+    }
+
+    this.loadedThreadId = this.threadId;
+    return true;
+  }
 }
 
 function xmlAttr(value: string): string {
@@ -533,7 +996,7 @@ const TOOLS = [
   },
 ];
 
-async function runMcp() {
+async function runMcp(stateAccess?: McpStateAccess) {
   const mcp = new Server(
     { name: "codex-peers", version: "0.1.0" },
     {
@@ -544,7 +1007,7 @@ async function runMcp() {
 
   mcp.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }));
   mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
-    const state = readState();
+    const state = stateAccess?.read() ?? readState();
     const { name, arguments: args } = req.params;
 
     switch (name) {
@@ -600,8 +1063,12 @@ async function runMcp() {
       }
       case "set_summary": {
         const { summary } = args as { summary: string };
-        await brokerFetch("/set-summary", { id: state.peer_id, summary }, state.broker_url);
-        writeState({ ...state, summary });
+        if (stateAccess?.updateSummary) {
+          await stateAccess.updateSummary(summary);
+        } else {
+          await brokerFetch("/set-summary", { id: state.peer_id, summary }, state.broker_url);
+          writeState({ ...state, summary });
+        }
         return { content: [{ type: "text" as const, text: `Summary updated: "${summary}"` }] };
       }
       case "check_messages": {
@@ -645,6 +1112,52 @@ async function runMcp() {
   log("MCP connected");
 }
 
+async function runDesktopMcp() {
+  if (await isNestedPrivateAppServerMcp()) {
+    log("Nested Codex app-server detected; running MCP tools without Desktop adapter recursion");
+    await runMcp();
+    return;
+  }
+
+  const desktopCwd = desktopWorkspaceCwd();
+  const adapter = new DesktopCodexAdapter(desktopCwd);
+  await adapter.start();
+
+  const cleanup = async () => {
+    await adapter.stop();
+    try {
+      rmSync(STATE_PATH);
+    } catch {
+      // best effort
+    }
+  };
+  process.on("SIGINT", () => cleanup().finally(() => process.exit(0)));
+  process.on("SIGTERM", () => cleanup().finally(() => process.exit(0)));
+
+  await runMcp({
+    read: () => adapter.getState(),
+    updateSummary: (summary) => adapter.updateSummary(summary),
+  });
+}
+
+async function runDesktopSidecar() {
+  const desktopCwd = desktopWorkspaceCwd();
+  const adapter = new DesktopCodexAdapter(desktopCwd);
+  await adapter.start();
+
+  const cleanup = async () => {
+    await adapter.stop();
+    process.exit(0);
+  };
+  process.on("SIGINT", () => cleanup());
+  process.on("SIGTERM", () => cleanup());
+
+  log("Desktop sidecar running");
+  await new Promise<never>(() => {
+    // Keep the delivery adapter alive until the OS stops the process.
+  });
+}
+
 const mode = process.argv[2] ?? "mcp";
 if (mode === "proxy") {
   runProxy().catch((e) => {
@@ -656,7 +1169,17 @@ if (mode === "proxy") {
     log(`Fatal MCP error: ${e instanceof Error ? e.message : String(e)}`);
     process.exit(1);
   });
+} else if (mode === "desktop-mcp") {
+  runDesktopMcp().catch((e) => {
+    log(`Fatal Desktop MCP error: ${e instanceof Error ? e.message : String(e)}`);
+    process.exit(1);
+  });
+} else if (mode === "desktop-sidecar") {
+  runDesktopSidecar().catch((e) => {
+    log(`Fatal Desktop sidecar error: ${e instanceof Error ? e.message : String(e)}`);
+    process.exit(1);
+  });
 } else {
-  console.error("Usage: bun codex-server.ts [proxy|mcp]");
+  console.error("Usage: bun codex-server.ts [proxy|mcp|desktop-mcp|desktop-sidecar]");
   process.exit(2);
 }
