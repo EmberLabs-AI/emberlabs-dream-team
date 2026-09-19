@@ -85,26 +85,24 @@ function brokerIsLocal(): boolean {
   }
 }
 
-async function ensureBroker(): Promise<void> {
+async function ensureBroker(): Promise<boolean> {
   if (await isBrokerAlive()) {
     log("Broker already running");
-    return;
+    return true;
   }
 
   // Remote broker (e.g. the Mac over Tailscale): NEVER spawn a local broker —
   // doing so creates a split-brain island where this machine's peers can't see
   // the remote ones. Instead retry to ride out a boot-race (Tailscale/DNS not up
   // yet at startup), then fail cleanly so the MCP surfaces a real error.
+  // A laptop that boots straight into Claude usually reaches this point before
+  // Tailscale is up; on 2026-09-19 Joe's session waited 15s, gave up, and Claude
+  // Code's 30s MCP timeout killed the server — so his Claude ran all day with no
+  // peer mesh. Never block MCP startup on the remote broker: main() connects the
+  // stdio transport first and registerWhenReachable() keeps trying in the background.
   if (!brokerIsLocal()) {
-    log(`Remote broker not reachable yet (${BROKER_URL}); retrying for up to 15s...`);
-    for (let i = 0; i < 15; i++) {
-      await new Promise((r) => setTimeout(r, 1000));
-      if (await isBrokerAlive()) {
-        log("Remote broker reachable");
-        return;
-      }
-    }
-    throw new Error(`Remote broker is not reachable after 15s: ${BROKER_URL}`);
+    log(`Remote broker not reachable yet (${BROKER_URL}); will register in the background`);
+    return false;
   }
 
   log("Starting broker daemon...");
@@ -122,10 +120,44 @@ async function ensureBroker(): Promise<void> {
     await new Promise((r) => setTimeout(r, 200));
     if (await isBrokerAlive()) {
       log("Broker started");
-      return;
+      return true;
     }
   }
   throw new Error("Failed to start broker daemon after 6 seconds");
+}
+
+function registerBody(summary: string): RegisterRequest {
+  return {
+    pid: process.pid,
+    cwd: myCwd,
+    git_root: myGitRoot,
+    tty: myTty,
+    summary,
+    machine_id: myMachineId,
+    peer_type: "claude",
+    delivery_mode: MODE === "pull" ? "pull" : "auto",
+  } satisfies RegisterRequest;
+}
+
+// Retry /register every 5s for as long as the process lives (logging once a
+// minute) — the tools already answer "Not registered with broker yet" until then.
+async function registerWhenReachable(): Promise<void> {
+  let attempt = 0;
+  while (!myId) {
+    await new Promise((r) => setTimeout(r, 5000));
+    attempt++;
+    if (!(await isBrokerAlive())) {
+      if (attempt % 12 === 0) log(`Remote broker still unreachable after ${attempt * 5}s (${BROKER_URL})`);
+      continue;
+    }
+    try {
+      const reg = await brokerFetch<RegisterResponse>("/register", registerBody(mySummary));
+      myId = reg.id;
+      log(`Registered late as peer ${myId} after ${attempt * 5}s (machine_id=${myMachineId})`);
+    } catch (e) {
+      log(`Late register failed (will retry): ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
 }
 
 // --- Utility ---
@@ -531,8 +563,8 @@ async function pollAndPushMessages() {
 // --- Startup ---
 
 async function main() {
-  // 1. Ensure broker is running
-  await ensureBroker();
+  // 1. Ensure broker is running (a remote broker may not be reachable yet — see ensureBroker)
+  const brokerReady = await ensureBroker();
 
   // 2. Gather context
   myCwd = process.cwd();
@@ -567,27 +599,22 @@ async function main() {
   // Wait briefly for summary, but don't block startup
   await Promise.race([summaryPromise, new Promise((r) => setTimeout(r, 3000))]);
 
-  // 4. Register with broker
+  // 4. Register with broker — now if it is up, otherwise in the background
   myTty = tty;
   mySummary = initialSummary;
-  const reg = await brokerFetch<RegisterResponse>("/register", {
-    pid: process.pid,
-    cwd: myCwd,
-    git_root: myGitRoot,
-    tty,
-    summary: initialSummary,
-    machine_id: myMachineId,
-    peer_type: "claude",
-    delivery_mode: MODE === "pull" ? "pull" : "auto",
-  } satisfies RegisterRequest);
-  myId = reg.id;
-  log(`Registered as peer ${myId} (machine_id=${myMachineId})`);
+  if (brokerReady) {
+    const reg = await brokerFetch<RegisterResponse>("/register", registerBody(initialSummary));
+    myId = reg.id;
+    log(`Registered as peer ${myId} (machine_id=${myMachineId})`);
+  } else {
+    void registerWhenReachable();
+  }
 
   // If summary generation is still running, update it when done
   if (!initialSummary) {
     summaryPromise.then(async () => {
+      if (initialSummary) mySummary = initialSummary;
       if (initialSummary && myId) {
-        mySummary = initialSummary;
         try {
           await brokerFetch("/set-summary", { id: myId, summary: initialSummary });
           log(`Late auto-summary applied: ${initialSummary}`);
@@ -632,16 +659,7 @@ async function main() {
       const res = await brokerFetch<HeartbeatResponse>("/heartbeat", { id: myId });
       if (res.stale) {
         log(`Heartbeat reported stale — re-registering with broker`);
-        const reg = await brokerFetch<RegisterResponse>("/register", {
-          pid: process.pid,
-          cwd: myCwd,
-          git_root: myGitRoot,
-          tty: myTty,
-          summary: mySummary,
-          machine_id: myMachineId,
-          peer_type: "claude",
-          delivery_mode: MODE === "pull" ? "pull" : "auto",
-        } satisfies RegisterRequest);
+        const reg = await brokerFetch<RegisterResponse>("/register", registerBody(mySummary));
         myId = reg.id;
         log(`Re-registered as peer ${myId}`);
       }
